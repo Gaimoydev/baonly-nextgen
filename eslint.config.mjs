@@ -112,7 +112,10 @@ export default tseslint.config(
     "**/playwright-report/**",
     "**/test-results/**",
     "backend/prisma/migrations/**",
-    "backend/src/generated/**",
+    // 生成物一律豁免：Prisma client 动辄上万行，max-lines 对它没有意义
+    "**/generated/**",
+    "**/*.generated.*",
+    "tmp/**",
     // openapi-typescript 生成物，不手写也不该被规范约束
     "frontend/shared/api-types.d.ts",
   ]),
@@ -206,20 +209,24 @@ export default tseslint.config(
       "@typescript-eslint/consistent-type-imports": "off",
       // 装饰器工厂返回 any，class-validator / swagger 大量如此
       "@typescript-eslint/no-unsafe-call": "off",
-      // ② 后端特有的额外收紧：Nest 里的类基本都是单例，实例字段上的 Map 同样是进程内状态
-      "no-restricted-syntax": [
-        "error",
-        ...RESTRICT_STATE,
-        {
-          selector: `ClassBody > PropertyDefinition > NewExpression${NEW_STATE}`,
-          message: STATE_MSG,
-        },
-        ...RESTRICT_COLOR,
-      ],
+      // ② Map/Set 的约束只针对**模块顶层与 static 字段**（即真正的进程内共享状态）。
+      //    有意 **不** 管类的实例字段：带 Redis Pub/Sub 失效机制的实例级缓存
+      //    （如 AppConfigService）是正当用法 —— 规则本意是禁止"用进程内 Map 存
+      //    本该跨实例共享的状态"，不是禁止一切 Map。
+      "no-restricted-syntax": ["error", ...RESTRICT_STATE, ...RESTRICT_COLOR],
     },
   },
 
-  // ── 3a · import 边界（dependency-cruiser 是权威，这里只是编辑器里的即时反馈）──
+  // ── 3a · import 边界 ────────────────────────────────────────────────────
+  //
+  // dependency-cruiser 是**权威**（它看解析后的真实文件，能抓到经中转文件的间接依赖）；
+  // 这里的 no-restricted-imports 只是为了在编辑器里即时报错，别等到 pnpm lint。
+  //
+  // 分层（2026-09-03 修正版，见 CLAUDE.md）：
+  //   core/       纯函数层。零框架、零 IO
+  //   infra/      基础设施。允许 NestJS DI + Prisma + Redis
+  //   sources/    爬虫解析器。只允许 @nestjs/common
+  //   modules/    controller + service
   {
     files: ["backend/src/core/**/*.ts"],
     rules: {
@@ -228,9 +235,69 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ["@nestjs", "@nestjs/*"],
+              group: [
+                "@nestjs",
+                "@nestjs/*",
+                "@prisma/*",
+                ".prisma/*",
+                "ioredis",
+                "pg",
+                "sharp",
+                "cheerio",
+                "class-validator",
+                "class-transformer",
+                "reflect-metadata",
+              ],
               message:
-                "core/ 是纯业务层，不得依赖 HTTP/框架。需要注入时把接口定义在 core/，由 modules/ 提供实现。",
+                "core/ 是纯函数层：零框架、零 IO。这是整套边界里最重要的一条 —— 它保证判同算法能脱离框架和数据库直接跑 Vitest。需要注入时把接口定义在 core/，由 infra/ 或 modules/ 提供实现。",
+            },
+            {
+              group: [
+                "node:fs",
+                "node:fs/*",
+                "fs",
+                "node:net",
+                "net",
+                "node:http",
+                "http",
+                "node:https",
+                "https",
+                "node:dns",
+                "dns",
+                "node:child_process",
+                "child_process",
+                "node:worker_threads",
+                "worker_threads",
+              ],
+              message:
+                "core/ 不得做 IO。读文件/发请求属于 infra/ 或 sources/，core 只处理已经取回来的数据 —— 这样判同才能用固定样本做确定性测试。",
+            },
+            {
+              group: [
+                "**/infra/**",
+                "**/modules/**",
+                "**/sources/**",
+                "**/contracts/**",
+              ],
+              message:
+                "core/ 在最底层，依赖方向必须始终指向它。不得反向依赖 infra/ · modules/ · sources/ · contracts/。",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["backend/src/infra/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/modules/**"],
+              message:
+                "infra/ 不得反向依赖 modules/。基础设施若知道业务模块，分层就塌了，而且会立刻产生循环依赖。",
             },
           ],
         },
@@ -245,9 +312,9 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ["@prisma/client", "@prisma/client/*", ".prisma/*"],
+              group: ["@prisma/client", "@prisma/*", ".prisma/*"],
               message:
-                "modules/ 不得直连 Prisma。数据访问一律经 core/repositories/（controller 和 service 里不得出现 prisma.xxx）。",
+                "modules/ 不得直连 Prisma。数据访问一律经 infra/repositories/（controller 和 service 里不得出现 prisma.xxx）。",
             },
           ],
         },
@@ -264,6 +331,12 @@ export default tseslint.config(
             {
               group: ["**/modules/**", "**/modules"],
               message: "sources/ 是爬虫解析层，不得依赖 HTTP 层。共享逻辑下沉到 core/。",
+            },
+            {
+              // `!` 是 no-restricted-imports 的取反语法：禁 @nestjs/* 但放行 @nestjs/common
+              group: ["@nestjs/*", "!@nestjs/common"],
+              message:
+                "sources/ 只允许 @nestjs/common（为了 @Injectable / Logger），不得引入 HTTP / WebSocket / Swagger / Throttler 等框架件。IO 由调用方注入。",
             },
           ],
         },
