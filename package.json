@@ -1,0 +1,25 @@
+{
+  "name": "baonly-nextgen",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.11.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "lint": "eslint . && depcruise --config .dependency-cruiser.cjs backend/src frontend",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "api:types": "openapi-typescript http://localhost:3000/openapi.json -o frontend/shared/api-types.d.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "dependency-cruiser": "^18.2.0",
+    "eslint": "^10.9.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "openapi-typescript": "^7.13.0",
+    "prettier": "^3.9.6",
+    "typescript-eslint": "^8.69.0"
+  }
+}

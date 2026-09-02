@@ -1,0 +1,791 @@
+// BAOnly Nextgen — 数据模型
+//
+// 设计原则
+//   1. 三层显式建模：采集层(Source/SourceRecord) → 实体层(Event/...) → 干预层(Override/状态)
+//      旧库把这三层压平进一个 payload BLOB，导致必须全量载入内存才能过滤。
+//   2. 凡需查询/排序/筛选/约束的字段一律真列 + 索引；只有"原始响应留档"和
+//      "稀疏覆盖"用 jsonb（PG 的 jsonb 可索引可查询，与 SQLite 的黑盒 TEXT 不同）。
+//   3. 时间统一 timestamptz；价格统一分(Int)；布尔统一 Boolean。
+//      旧库时间存 TEXT ISO 串、布尔存 INTEGER，是已知的 bug 来源。
+//   4. 状态用枚举字段，取代旧库 hidden_events / disabled_details /
+//      removed_source_events / hidden_tickets 四张"单布尔标记表"。
+//
+// 实测依据(data_e8ktN, 2026-08-31)
+//   257 条源记录 → 148 个活动，多源合并占 70%；fieldSources 100% 在用、
+//   changeNotices 69% 在用、票档 84% 在用。故 SourceRecord / EventFieldOrigin /
+//   ChangeNotice / Ticket 均为必需，不可简化掉。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7:连接 URL 不再写在 schema 里，移到 prisma.config.ts（迁移用）
+// 运行时通过 driver adapter 注入（见 src/core/prisma/）
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────
+// ① 采集层
+// ─────────────────────────────────────────────────────────────
+
+/// 数据源定义。manual(人工登记)也是一个源，从而消除旧库 manual_events 独立成表
+/// 带来的 union 查询和 `source === "manual"` 特判。
+model Source {
+  key         String   @id // "bilibili" | "dlcomic" | "cpp" | "baonlytime" | "manual"
+  name        String
+  enabled     Boolean  @default(true)
+  /// 抓取顺序；判同择优时同分情况下的优先级
+  priority    Int      @default(0)
+  lastRunAt   DateTime? @db.Timestamptz(3)
+  lastOkAt    DateTime? @db.Timestamptz(3)
+  lastError   String?
+  /// 爬虫登录态/游标等（取代旧库 source_sessions.payload TEXT）
+  session     Json?
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  records     SourceRecord[]
+  runs        SourceRun[]
+
+  @@map("sources")
+}
+
+/// 每个源抓到的一条原始记录。判同的输入单位。
+/// eventId 为 null = 尚未归簇的孤儿记录（判同审查台的主要工作对象）。
+model SourceRecord {
+  id            String   @id @default(cuid())
+  sourceKey     String
+  /// 对方站点的记录 ID
+  sourceEventId String
+  sourceUrl     String?
+
+  // ── 该源抓到的原样值。Event 上的规范值由这些择优合并而来 ──
+  title         String
+  startAt       DateTime? @db.Timestamptz(3)
+  endAt         DateTime? @db.Timestamptz(3)
+  timeLabel     String?
+  province      String?
+  city          String?
+  venueName     String?
+  address       String?
+  latitude      Decimal?  @db.Decimal(10, 7)
+  longitude     Decimal?  @db.Decimal(10, 7)
+  priceLowCents  Int?
+  priceHighCents Int?
+  priceLabel    String?
+  saleFlag      String?
+  wishCount     Int?
+  pcTicketUrl   String?
+  mobileTicketUrl String?
+  description   String?
+  organizerName String?
+
+  /// 对方原始响应留档。永不参与查询，仅供追溯和 re-parse。
+  rawPayload    Json?
+
+  // ── 生命周期 ──
+  firstSeenAt   DateTime  @default(now()) @db.Timestamptz(3)
+  lastSeenAt    DateTime  @default(now()) @db.Timestamptz(3)
+  /// 连续几次抓取未出现。达到阈值(SOURCE_REMOVAL_CONFIRMATIONS)才判定下架，
+  /// 用于区分「源端真的下架」和「本次抓取失败」。
+  missingStreak Int       @default(0)
+  removedAt     DateTime? @db.Timestamptz(3)
+
+  // ── 判同结果 ──
+  eventId       String?
+  /// 判同置信度与证据快照，供审查台展示"为什么把它并进这个 Event"
+  matchScore    Decimal?  @db.Decimal(4, 3)
+  matchEvidence Json?
+  /// true = 运营在审查台里手工指定的归属，判同不得覆盖
+  matchLocked   Boolean   @default(false)
+
+  source        Source    @relation(fields: [sourceKey], references: [key], onDelete: Cascade)
+  event         Event?    @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  tickets       Ticket[]
+  fieldOrigins  EventFieldOrigin[]
+  changeNotices ChangeNotice[]
+
+  @@unique([sourceKey, sourceEventId])
+  @@index([eventId])
+  @@index([sourceKey, lastSeenAt])
+  @@index([eventId, sourceKey])
+  // 孤儿记录查询：WHERE event_id IS NULL
+  @@index([startAt])
+  @@map("source_records")
+}
+
+/// 每次爬虫运行的记录。取代旧架构靠日志翻查抓取历史的做法，
+/// 直接支撑后台的"爬虫运行监控"视图。
+model SourceRun {
+  id           String    @id @default(cuid())
+  sourceKey    String
+  startedAt    DateTime  @default(now()) @db.Timestamptz(3)
+  finishedAt   DateTime? @db.Timestamptz(3)
+  status       RunStatus @default(RUNNING)
+  /// 本次抓取统计
+  fetched      Int       @default(0)
+  created      Int       @default(0)
+  updated      Int       @default(0)
+  unchanged    Int       @default(0)
+  markedRemoved Int      @default(0)
+  errorMessage String?
+  trigger      RunTrigger @default(SCHEDULED)
+
+  source       Source    @relation(fields: [sourceKey], references: [key], onDelete: Cascade)
+
+  @@index([sourceKey, startedAt])
+  @@map("source_runs")
+}
+
+enum RunStatus {
+  RUNNING
+  SUCCESS
+  PARTIAL
+  FAILED
+}
+
+enum RunTrigger {
+  SCHEDULED
+  MANUAL
+  STARTUP
+}
+
+// ─────────────────────────────────────────────────────────────
+// ② 实体层
+// ─────────────────────────────────────────────────────────────
+
+/// 判同合并后的活动实体。规范字段是**物化**的（爬虫跑完写入），
+/// 前台查询是纯 SQL 无计算 —— 取代旧架构"全量载入内存再 JS 过滤"。
+model Event {
+  id          String   @id @default(cuid())
+
+  // ── 规范字段（由 SourceRecord 择优 + EventOverride 覆盖后物化）──
+  title       String
+  startAt     DateTime  @db.Timestamptz(3)
+  endAt       DateTime? @db.Timestamptz(3)
+  /// 源站的人类可读时间描述，无法结构化时保留原文
+  timeLabel   String?
+
+  venueId     String?
+  cityId      String?
+  organizerId String?
+
+  priceLowCents  Int?
+  priceHighCents Int?
+  priceLabel     String?
+  saleFlag       String?
+  wishCount      Int?
+
+  pcTicketUrl     String?
+  mobileTicketUrl String?
+  description     String?
+
+  coverImageId  String?
+  bannerImageId String?
+
+  // ── 状态（取代四张单布尔标记表）──
+  visibility  Visibility  @default(PUBLIC)
+  /// 详情页访问开关，独立于 visibility（旧库 disabled_details）
+  detailState DetailState @default(ENABLED)
+  /// 源端是否已下架（旧库 removed_source_events）
+  sourceState SourceState @default(ACTIVE)
+  featured    Boolean     @default(false)
+  /// 运营自定义的高亮色，前台卡片边框用
+  highlightColor String?
+
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  venue        Venue?     @relation(fields: [venueId], references: [id], onDelete: SetNull)
+  city         City?      @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  organizer    Organizer? @relation(fields: [organizerId], references: [id], onDelete: SetNull)
+  coverImage   Image?     @relation("EventCover", fields: [coverImageId], references: [id], onDelete: SetNull)
+  bannerImage  Image?     @relation("EventBanner", fields: [bannerImageId], references: [id], onDelete: SetNull)
+
+  records      SourceRecord[]
+  dates        EventDate[]
+  tickets      Ticket[]
+  tags         EventTag[]
+  infoItems    EventInfoItem[]
+  guests       EventGuest[]
+  fieldOrigins EventFieldOrigin[]
+  changeNotices ChangeNotice[]
+  override     EventOverride?
+
+  // 支撑前台 20 个筛选维度的索引
+  @@index([startAt])
+  @@index([visibility, startAt])
+  @@index([cityId, startAt])
+  @@index([visibility, sourceState, startAt])
+  @@index([featured, startAt])
+  @@index([priceLowCents])
+  @@map("events")
+}
+
+enum Visibility {
+  PUBLIC
+  HIDDEN
+}
+
+enum DetailState {
+  ENABLED
+  DISABLED
+}
+
+enum SourceState {
+  ACTIVE
+  REMOVED
+}
+
+/// 多天活动的每日场次。取代旧架构 eventDayKeys 返回字符串数组、
+/// eventsShareDay 做数组交集的做法 —— 现在是一次 join。
+/// 年份必须参与（旧实现用不含年份的 MM-DD，导致同月同日不同年被误并）。
+model EventDate {
+  id      String    @id @default(cuid())
+  eventId String
+  date    DateTime  @db.Date
+  startAt DateTime? @db.Timestamptz(3)
+  endAt   DateTime? @db.Timestamptz(3)
+
+  event   Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, date])
+  @@index([date])
+  @@map("event_dates")
+}
+
+/// 票档。旧架构埋在 detail.tickets 数组里，靠数组下标定位，
+/// 导致增删/重排行后隐藏标记和价格错位到别的票上（已知 bug）。
+/// 这里有稳定主键，从设计上排除该问题。
+model Ticket {
+  id             String  @id @default(cuid())
+  eventId        String
+  /// 来自哪条源记录；人工添加的票档为 null
+  sourceRecordId String?
+  /// 源站票档 ID，用于跨次抓取稳定匹配
+  sourceTicketId String?
+
+  name        String
+  screenName  String?
+  priceCents  Int?
+  priceLabel  String?
+  saleFlag    String?
+  saleStartAt DateTime? @db.Timestamptz(3)
+  saleEndAt   DateTime? @db.Timestamptz(3)
+  /// 旧库 hidden_tickets 表
+  hidden      Boolean  @default(false)
+  sortOrder   Int      @default(0)
+
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  event        Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  sourceRecord SourceRecord? @relation(fields: [sourceRecordId], references: [id], onDelete: SetNull)
+
+  @@index([eventId, sortOrder])
+  @@map("tickets")
+}
+
+/// 详情里的信息条目（基本信息 / 主办信息 / 数据源信息）。
+/// 旧架构是 detail.baseInfo / detail.organizer 的对象数组。
+model EventInfoItem {
+  id        String          @id @default(cuid())
+  eventId   String
+  section   InfoSection
+  title     String
+  content   String
+  sortOrder Int             @default(0)
+
+  event     Event           @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, section, sortOrder])
+  @@map("event_info_items")
+}
+
+enum InfoSection {
+  BASE_INFO
+  ORGANIZER
+  /// "数据源/信息源" 类条目，导出与展示时需单独过滤
+  SOURCE_INFO
+}
+
+/// 嘉宾。旧架构是 detail 里的数组，头像是裸 URL。
+model EventGuest {
+  id        String  @id @default(cuid())
+  eventId   String
+  name      String
+  imageId   String?
+  sortOrder Int     @default(0)
+
+  event     Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  image     Image?  @relation(fields: [imageId], references: [id], onDelete: SetNull)
+
+  @@index([eventId, sortOrder])
+  @@map("event_guests")
+}
+
+/// 场馆实体。旧架构场馆是裸字符串，每次判同都要跑
+/// normalizeVenueCoreForMatch 重算归一化；这里归一化在写入时做一次并建唯一索引。
+model Venue {
+  id             String   @id @default(cuid())
+  name           String
+  /// 归一化名（去后缀/空格/全半角统一），判同与去重的依据
+  normalizedName String
+  address        String?
+  cityId         String?
+  latitude       Decimal? @db.Decimal(10, 7)
+  longitude      Decimal? @db.Decimal(10, 7)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  city           City?    @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  events         Event[]
+
+  @@unique([normalizedName, cityId])
+  @@index([cityId])
+  @@map("venues")
+}
+
+/// 城市实体。支撑前台按城市/省份/大区筛选，以及 GPS 距离排序。
+model City {
+  id             String  @id @default(cuid())
+  name           String
+  normalizedName String  @unique
+  province       String
+  /// 华东/华北/华南… 前台"大区"筛选用
+  region         String?
+  latitude       Decimal? @db.Decimal(10, 7)
+  longitude      Decimal? @db.Decimal(10, 7)
+
+  venues         Venue[]
+  events         Event[]
+
+  @@index([province])
+  @@index([region])
+  @@map("cities")
+}
+
+/// 字段级来源追踪：Event 上每个规范字段最终采用了哪个源的值。
+/// 实测 148/148 个活动都在用（旧库的 fieldSources JSON）。
+/// 前台"疑似地点变更"提示和判同审查台都依赖它。
+model EventFieldOrigin {
+  eventId        String
+  /// "title" | "startAt" | "venueName" | "priceLow" | ...
+  fieldName      String
+  sourceRecordId String?
+  sourceKey      String
+
+  event          Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  sourceRecord   SourceRecord? @relation(fields: [sourceRecordId], references: [id], onDelete: SetNull)
+
+  @@id([eventId, fieldName])
+  @@index([sourceRecordId])
+  @@map("event_field_origins")
+}
+
+/// 变更通知。实测 102/148 个活动有历史变更记录（旧库 changeNotices JSON 数组）。
+/// 前台会据此显示"疑似地点变更 / 时间变更"。
+model ChangeNotice {
+  id             String   @id @default(cuid())
+  eventId        String
+  sourceRecordId String?
+  field          String
+  oldValue       String?
+  newValue       String?
+  noticedAt      DateTime @default(now()) @db.Timestamptz(3)
+  /// 超出 CHANGE_NOTICE_WINDOW_DAYS 后前台不再展示，但记录保留
+  dismissedAt    DateTime? @db.Timestamptz(3)
+
+  event          Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  sourceRecord   SourceRecord? @relation(fields: [sourceRecordId], references: [id], onDelete: SetNull)
+
+  @@index([eventId, noticedAt])
+  @@map("change_notices")
+}
+
+// ─────────────────────────────────────────────────────────────
+// ③ 干预层
+// ─────────────────────────────────────────────────────────────
+
+/// 运营对 Event 规范字段的覆盖。旧库是 event_overrides.payload TEXT（黑盒 JSON）。
+/// 这里核心可查字段为真列，稀疏的其余部分留 jsonb —— 覆盖是稀疏的，
+/// 全部展开会产生大量 nullable 列。
+model EventOverride {
+  eventId     String   @id
+  title       String?
+  startAt     DateTime? @db.Timestamptz(3)
+  endAt       DateTime? @db.Timestamptz(3)
+  timeLabel   String?
+  venueName   String?
+  address     String?
+  cityName    String?
+  priceLowCents  Int?
+  priceHighCents Int?
+  priceLabel  String?
+  description String?
+  /// 其余低频覆盖字段
+  extra       Json?
+
+  editedBy    String?
+  editedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  event       Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("event_overrides")
+}
+
+// ─────────────────────────────────────────────────────────────
+// 内容管理
+// ─────────────────────────────────────────────────────────────
+
+model Organizer {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  url       String?
+  color     String?
+  imageId   String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  image     Image?   @relation(fields: [imageId], references: [id], onDelete: SetNull)
+  events    Event[]
+
+  @@map("organizers")
+}
+
+model Tag {
+  name      String     @id
+  color     String?
+  /// 前台标签展示位置：normal / pinned 等
+  position  String     @default("normal")
+  updatedAt DateTime   @updatedAt @db.Timestamptz(3)
+
+  events    EventTag[]
+
+  @@map("tags")
+}
+
+model EventTag {
+  eventId   String
+  tagName   String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  /// 后台未保存的草稿标签不入库；此字段标记该标签是人工加的还是源站带的
+  manual    Boolean  @default(true)
+
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tag       Tag      @relation(fields: [tagName], references: [name], onDelete: Cascade)
+
+  @@id([eventId, tagName])
+  @@index([tagName])
+  @@map("event_tags")
+}
+
+model Announcement {
+  id          String            @id @default(cuid())
+  title       String
+  content     String
+  /// 无时区的后台输入必须按 Asia/Shanghai 解析后存 timestamptz
+  publishedAt DateTime          @db.Timestamptz(3)
+  display     AnnouncementDisplay @default(LIST)
+  createdAt   DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime          @updatedAt @db.Timestamptz(3)
+
+  @@index([publishedAt])
+  @@map("announcements")
+}
+
+enum AnnouncementDisplay {
+  LIST
+  PINNED
+  MODAL
+}
+
+/// 节假日。支撑前台"节假日筛选"（旧架构存 calendar.json + 外部 API）。
+model Holiday {
+  date      DateTime @id @db.Date
+  name      String
+  /// true=法定假日, false=调休上班
+  isHoliday Boolean  @default(true)
+  year      Int
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([year])
+  @@map("holidays")
+}
+
+// ─────────────────────────────────────────────────────────────
+// 图片
+// ─────────────────────────────────────────────────────────────
+
+/// 图片索引。旧架构 658~1088 个文件平铺在 data/images/，文件名是 sha256，
+/// 数据库里没有任何索引 —— 所以才需要 cleanup-unreferenced-images.js 去猜哪些没人用。
+/// 保留 content-addressed 去重（sha256 唯一），但补上索引层。
+model Image {
+  id         String   @id @default(cuid())
+  sha256     String   @unique
+  mime       String
+  width      Int?
+  height     Int?
+  bytes      Int
+  /// 两级分片路径 ab/cd/<sha256>.webp，避免单目录堆上万文件
+  storageKey String   @unique
+  /// SCDN 上的远端地址（CF / ESA 双路由由前端按测速选择）
+  remoteUrl  String?
+  remoteCfUrl  String?
+  remoteEsaUrl String?
+  uploadedAt DateTime? @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  refs        ImageRef[]
+  eventCovers  Event[]  @relation("EventCover")
+  eventBanners Event[]  @relation("EventBanner")
+  organizers   Organizer[]
+  guests       EventGuest[]
+
+  @@map("images")
+}
+
+/// 图片引用关系。让"这张图属于谁"和"哪些图没人引用"都变成一条 SQL，
+/// 取代 cleanup-unreferenced-images.js 的启发式扫描。
+model ImageRef {
+  imageId   String
+  ownerType ImageOwnerType
+  ownerId   String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  image     Image    @relation(fields: [imageId], references: [id], onDelete: Cascade)
+
+  @@id([imageId, ownerType, ownerId])
+  @@index([ownerType, ownerId])
+  @@map("image_refs")
+}
+
+enum ImageOwnerType {
+  EVENT_COVER
+  EVENT_BANNER
+  EVENT_DETAIL
+  TICKET
+  ORGANIZER
+  GUEST
+  ANNOUNCEMENT
+  SITE
+}
+
+// ─────────────────────────────────────────────────────────────
+// 系统 / 运营
+// ─────────────────────────────────────────────────────────────
+
+/// 应用配置 —— 取代上一代的 150+ 个 .env 变量。
+///
+/// 配置原则：
+///   .env 只放【极敏感】或【运行时必需、无法自举】的项 ——
+///   DATABASE_URL / REDIS_URL / NODE_ENV / PORT，以及凭据类
+///   （CPP 账号密码、WxPusher token、SCDN token）。
+///   其余一切配置进这张表，后台随时修改、热生效，不需要改文件也不需要重启。
+///
+/// 带元数据（category / valueType / constraints / label）是为了让**后台配置页
+/// 能由元数据驱动自动生成表单** —— 加一个配置项只需插一行，不必改前端。
+model AppConfig {
+  key             String          @id // 点分命名，如 "crawler.bilibili.concurrency"
+  category        ConfigCategory
+  valueType       ConfigValueType
+  value           Json
+  /// 默认值，供后台"恢复默认"
+  defaultValue    Json?
+  /// true = 敏感项：公共 API 绝不返回，后台以掩码显示
+  isSecret        Boolean         @default(false)
+  /// 后台显示的中文名
+  label           String
+  /// 说明、单位、取值范围
+  description     String?
+  /// 校验约束（min/max/step/pattern/options），后台前端据此校验
+  constraints     Json?
+  sortOrder       Int             @default(0)
+  /// 是否需要重启才生效。绝大多数应为 false（热生效）
+  requiresRestart Boolean         @default(false)
+  updatedBy       String?
+  updatedAt       DateTime        @updatedAt @db.Timestamptz(3)
+
+  @@index([category, sortOrder])
+  @@map("app_configs")
+}
+
+enum ConfigCategory {
+  SITE // 站点信息、SEO 文案、公告展示策略
+  CRAWLER // 爬虫并发 / 重试 / 超时 / 分页上限 / 源移除确认次数
+  IMAGE // 压缩质量、尺寸上限、缓存清理策略
+  CDN // SCDN 端点、CF/ESA 双路由策略、keepalive
+  NOTIFICATION // 通知模板、WxPusher 收件人与节流
+  ANALYTICS // 采样率、明细保留期、维护计划
+  RATE_LIMIT // 各类限流阈值
+  MATCHING // 判同阈值 —— 让运营能直接调合并松紧，不必改代码发版
+  SECURITY // 封禁策略、会话 TTL、变更通知窗口
+}
+
+enum ConfigValueType {
+  STRING
+  TEXT // 多行文本
+  NUMBER
+  BOOLEAN
+  JSON
+  CRON // cron 表达式，后台可用专用控件
+  COLOR
+  DURATION_MS
+  TEMPLATE // 含变量占位符的模板（通知/SEO 文案）
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  name       String
+  /// sha256(明文 key)，明文不落库
+  keyHash    String    @unique
+  enabled    Boolean   @default(true)
+  /// 旧实现无过期无 scope，这里补上（功能对等前可留空不启用）
+  expiresAt  DateTime? @db.Timestamptz(3)
+  scopes     String[]  @default([])
+  lastUsedAt DateTime? @db.Timestamptz(3)
+  requestCount Int     @default(0)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@map("api_keys")
+}
+
+model AdminToken {
+  id        String    @id @default(cuid())
+  name      String
+  tokenHash String    @unique
+  enabled   Boolean   @default(true)
+  revokedAt DateTime? @db.Timestamptz(3)
+  lastUsedAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@map("admin_tokens")
+}
+
+/// 访客封禁规则。旧库 client_blocks 当前 0 行，但功能是活的，不可省。
+model ClientBlock {
+  id        String   @id @default(cuid())
+  dimension BlockDimension
+  value     String
+  reason    String?
+  enabled   Boolean  @default(true)
+  expiresAt DateTime? @db.Timestamptz(3)
+  createdBy String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([dimension, value])
+  @@index([enabled, dimension, value])
+  @@map("client_blocks")
+}
+
+enum BlockDimension {
+  IP
+  VISITOR_HASH
+  USER_AGENT
+  FINGERPRINT
+}
+
+// ─────────────────────────────────────────────────────────────
+// 分析
+// ─────────────────────────────────────────────────────────────
+
+/// 分析明细。旧库 analytics_events 314k 行 + analytics_access_events 349k 行
+/// 合计占 581MB 的 99%。迁移只带最近 N 天，历史趋势靠 rollup。
+/// 注意：旧库 analytics_event_catalog 是活动元数据快照——因为旧主库没有活动表，
+/// 分析模块只好自己存一份。这里直接外键引用 Event，那张表取消。
+model AnalyticsEvent {
+  id            String   @id @default(cuid())
+  type          String
+  category      String   @default("public")
+  eventId       String?
+  path          String?
+  referrer      String?
+  searchEngine  String?
+  visitorHash   String?
+  ipHash        String?
+  visitorSource String?
+  userAgent     String?
+  /// 真实性判定（旧库的 valid INTEGER）
+  valid         Boolean  @default(false)
+  securityEvent String?
+  status        Int?
+  summary       String?
+  requestIp     String?
+  browserIp     String?
+  webRtcIp      String?
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([createdAt])
+  @@index([type, createdAt])
+  @@index([eventId, createdAt])
+  @@index([searchEngine, createdAt])
+  @@index([visitorHash, createdAt])
+  @@index([securityEvent, createdAt])
+  @@map("analytics_events")
+}
+
+model AnalyticsAccessEvent {
+  id        String   @id @default(cuid())
+  path      String
+  method    String
+  status    Int
+  category  String   @default("public")
+  durationMs Int?
+  requestIp String?
+  visitorHash String?
+  userAgent String?
+  referrer  String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([createdAt])
+  @@index([path, createdAt])
+  @@index([status, createdAt])
+  @@index([category, createdAt])
+  @@map("analytics_access_events")
+}
+
+/// 日聚合。仪表盘只读这张表，明细仅供钻取且强制时间窗上限 ——
+/// 旧架构 getAnalyticsDashboard 直接扫明细，而 DB worker 是串行的，
+/// 于是打开后台就能卡住整个站点。
+model AnalyticsDailyRollup {
+  day       DateTime @db.Date
+  metric    String
+  dimension String   @default("")
+  value     Int      @default(0)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([day, metric, dimension])
+  @@index([metric, day])
+  @@map("analytics_daily_rollups")
+}
+
+/// IP 地理缓存。配合前台已有的中国省市 geojson 做地域热力图下钻。
+model IpGeoCache {
+  ip        String   @id
+  country   String?
+  province  String?
+  city      String?
+  isp       String?
+  latitude  Decimal? @db.Decimal(10, 7)
+  longitude Decimal? @db.Decimal(10, 7)
+  lookedUpAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([province])
+  @@map("ip_geo_cache")
+}
+
+/// 维护任务运行记录（analytics 保留期清理、日志清理、图片缓存清理等）
+model MaintenanceRun {
+  id           String    @id @default(cuid())
+  kind         String
+  trigger      RunTrigger @default(SCHEDULED)
+  startedAt    DateTime  @default(now()) @db.Timestamptz(3)
+  finishedAt   DateTime? @db.Timestamptz(3)
+  status       RunStatus @default(RUNNING)
+  affectedRows Int       @default(0)
+  detail       Json?
+  errorMessage String?
+
+  @@index([kind, startedAt])
+  @@map("maintenance_runs")
+}

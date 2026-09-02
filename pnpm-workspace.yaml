@@ -1,0 +1,13 @@
+packages:
+  - backend
+  - frontend/client
+  - frontend/dashboard
+
+allowBuilds:
+  # Prisma 需要下载查询引擎二进制，必须允许
+  '@prisma/engines': true
+  prisma: true
+  # sharp 需要 libvips 原生二进制
+  sharp: true
+  # @scarf/scarf 是遥测收集包，不需要也不应该执行安装脚本
+  '@scarf/scarf': false
