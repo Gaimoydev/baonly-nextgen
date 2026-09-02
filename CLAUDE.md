@@ -27,8 +27,10 @@ backend/                  NestJS + Prisma。唯一的后端服务
       repositories/       数据访问。**唯一允许 import @prisma/client 的地方**
       storage/            图片存储(两级分片) + SCDN 上传
     sources/              3 个爬虫解析器(bilibili / cpp / dlcomic)
-    modules/              NestJS 功能模块(controller + service)
+    modules/              NestJS **功能**模块(controller + service)。根组合模块不放这里
     contracts/            DTO + class-validator 装饰器 → 自动生成 OpenAPI
+    app.module.ts         根模块 1:API 进程(**不注册** ScheduleModule)
+    worker.module.ts      根模块 2:worker 进程(注册 ScheduleModule)
     main.ts               入口 1:HTTP API
     worker.ts             入口 2:常驻进程(cron + 爬虫 + sharp + SCDN)
 
@@ -47,7 +49,12 @@ docs/                     feature-parity.md · migration-map.md · sources.md ·
 | `max-lines-per-function: 80` | 阻止巨型函数 |
 | 禁止 inline style / 字面量色值 | 强制走设计 token。上一代累积出 8,894 行无结构 CSS |
 | import 边界(dependency-cruiser) | 见下 |
-| `no-restricted-syntax`: `new Map()` / `new Set()` 作模块级状态 | 上一代有 59 个进程内 Map,只 21 个带上限,导致内存增长 + 无法多实例 |
+| `no-restricted-syntax`: `new Map()` / `new Set()` 作模块级**可变状态** | 上一代有 59 个进程内 Map,只 21 个带上限,导致内存增长 + 无法多实例 |
+
+> 最后一条的判据是**是否随请求/时间增长**,不是"出现了 Map 就违规"。
+> 不可变有界的常量查找表(枚举映射、正则表)是合法的,用 `as const` /
+> `Object.freeze`,放在 `*.constants.ts` / `*.registry.ts`。
+> **不要为了过规则去改本来正确的代码**——那是规则该收窄。
 
 ### import 边界
 
@@ -68,6 +75,24 @@ dashboard/     不得 import  @heroui/*     ← 后台只用 AntD
 > 这套分层是修正过的:最初把 `repositories/` 放在 `core/` 下,与"core 不得 import
 > @nestjs/*"直接冲突(仓储需要 DI 注入 Prisma)。现在 `core/` 是**真正的纯函数层**,
 > 一切 IO 和框架依赖下沉到 `infra/`。
+
+**判断一个文件该放 `core/` 还是 `infra/`,只有一条判据:它是否碰 IO 或框架。**
+不看名字。`core/` 里不该出现 `.service.ts` 后缀(会被误读成可注入的 Nest 服务),
+纯逻辑用 `.resolver.ts` / `.registry.ts` / 直接函数名。
+「创建数据库连接」「创建 Redis 连接」属于基础设施,即使写成纯工厂函数也归 `infra/`。
+
+### 验证命令(只有这一个入口)
+
+```bash
+pnpm lint          # eslint + dependency-cruiser
+pnpm lint:deps     # 只跑 import 边界
+```
+
+⚠️ **不要手敲 `depcruise`,更不要加 `--validate`。** 该选项在 dependency-cruiser 18
+里已不是有效选项,传了它会**静默吞掉紧跟的路径参数**——
+`depcruise --config X --validate backend/src frontend` 只检查了 `frontend`,
+却报「✔ no dependency violations found」。实测中两条真实的 `core-no-framework`
+error 就是这样被漏掉整整一轮的。
 
 ## 后端规范
 
@@ -105,12 +130,24 @@ dashboard/     不得 import  @heroui/*     ← 后台只用 AntD
 `fieldSources` **100%** 在用、`changeNotices` **69%** 在用、票档 **84%** 在用。
 因此 `SourceRecord` / `EventFieldOrigin` / `ChangeNotice` / `Ticket` 都不可简化掉。
 
+> ⚠️ **`fieldSources` 极易被误判为"前台没用到"** —— 在上一代 `src/` 里搜
+> `fieldSources` 是**零结果**(前台经解密后的响应字段访问,不是源码字面量)。
+> 但它实际驱动了前台**四块** UI,新实现必须都有:
+> ① 活动详情的「资料来源」归属标注 ② 多源取值冲突时的「源差异」提示
+> ③ 字段变更提示(配合 `ChangeNotice`) ④ 详情页在多条原始源记录之间切换查看
+> 只按源码搜索做功能对等盘点会把这四块整片漏掉。
+
 > ⚠ 别把 259 记成 257。257 是按 `sources[]`(去重后的源**种类**)算的 44×1+99×2+5×3;
 > 真实记录条数看 `sourceRecords[]` = 259(有 1 个活动在同一个源下有 2 条记录)。
 
 - `Event` 的规范字段是**物化**的(爬虫跑完写入),前台查询为纯 SQL 无计算。改判同规则后需重跑物化。
 - 状态用枚举字段,**不再**用"每张只存一个布尔"的标记表(上一代有 4 张)。
 - jsonb 只用于 `SourceRecord.rawPayload`(原始留档)和 `EventOverride.extra`(稀疏覆盖)。**凡需查询的字段一律真列。**
+- **人工合并/拆分必须可逆。** 上一代的 `source-match`(手动关联两条活动)因为叠了
+  两道互相锁死的校验,线上实际**不可用**;而且合并后无法撤销。新实现:合并 =
+  把 `SourceRecord` 重新指向目标 `Event`,拆分 = 再指回去。因为归属关系是一条
+  外键而不是一次破坏性写入,可逆是自然结果——**别把合并实现成"写完就丢掉来源"**。
+  (功能对等的对象是这个功能的*意图*,不是它损坏的现状。)
 
 ## 从上一代继承的教训(不是代码,是约束)
 

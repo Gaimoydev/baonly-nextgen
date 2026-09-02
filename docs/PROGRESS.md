@@ -31,6 +31,38 @@ powershell -NoProfile -File scripts\dev-services.ps1 start|stop|status|restart
 
 - ⚠ **GitHub 推送不可用**：本机无 `gh` CLI、无 credential helper，`git ls-remote` 无响应。需要配置凭据（gh auth login 或 PAT）才能 push。目前所有提交只在本地
 
+## 并行施工的教训（已发生，不是假设）
+
+**Prisma / Redis 各被两个 agent 平行实现了两套**，且根模块、基础设施聚合模块也各有两份：
+
+| 组件 | A 套（nest-skeleton） | B 套（config-system） | 裁决 |
+|---|---|---|---|
+| Prisma | `core/prisma/factory` + `modules/prisma/{module,service,tokens}` | `infra/prisma/prisma.service.ts` | **A 胜**，搬去 `infra/` |
+| Redis | 同构 | `infra/redis/redis.service.ts` | **A 胜** |
+| 根模块 | `modules/app.module.ts` | `src/app.module.ts` | 内容取 A，**位置取 B** |
+| 聚合 | `modules/infrastructure.module.ts` | `infra/infra.module.ts` | 合并进 `infra/infra.module.ts` |
+| AppConfig | — | `infra/config/app-config.service.ts` | **B 独有，保留** |
+
+A 套胜出的实质理由（不是先来后到）：
+- `onPoolError` 把 pg 空闲连接错误降级为日志 —— 否则事件冒泡成 `uncaughtException`，
+  被崩溃守卫一杀，**一次网络抖动就重启进程**
+- 连接串 `?schema=` 剥离（pg 不认这个 Prisma 自有参数）
+- DI token 独立成文件，避开 module↔service 循环 import
+- 而且 `main.ts` / `worker.ts` 实际 import 的就是 A 套，B 套是死代码
+
+**避免复发**：给 agent 派活时必须写明**独占的文件路径**，基础设施类文件（Prisma/Redis/根模块/lint 配置）只能有一个 owner。已按此重新分工。
+
+### 一个骗过整轮验证的命令陷阱
+
+```
+depcruise --config X --validate backend/src frontend   → ✔ no violations (7 modules)   ❌ 骗人
+depcruise --config X          backend/src frontend     → x 2 violations (48 modules)   ✅ 真相
+```
+
+`--validate` 在 dependency-cruiser 18 里**不是有效选项**，会静默吞掉紧跟的路径参数。
+两条真实的 `core-no-framework` error（`core/prisma/factory` → `@prisma/client`、
+`core/redis/factory` → `ioredis`）因此漏了整轮。**统一只用 `pnpm lint` / `pnpm lint:deps`，不手敲。**
+
 ## 阶段 0 · 轨道
 
 | 项 | 状态 |
