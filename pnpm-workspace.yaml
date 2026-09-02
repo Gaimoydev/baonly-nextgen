@@ -12,3 +12,4 @@ allowBuilds:
   sharp: true
   # @scarf/scarf 是遥测收集包，不需要也不应该执行安装脚本
   '@scarf/scarf': false
+  esbuild: set this to true or false

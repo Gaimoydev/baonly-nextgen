@@ -312,14 +312,19 @@ enum InfoSection {
 
 /// 嘉宾。旧架构是 detail 里的数组，头像是裸 URL。
 model EventGuest {
-  id        String  @id @default(cuid())
-  eventId   String
-  name      String
-  imageId   String?
-  sortOrder Int     @default(0)
+  id            String  @id @default(cuid())
+  eventId       String
+  name          String
+  /// 嘉宾简介。实测旧数据 245 位嘉宾里 225 位有简介文本
+  /// （如"配音演员/配音导演，为蔚蓝档案中的浦和花子配音…"），不可省略
+  description   String?
+  imageId       String?
+  /// 源站的嘉宾 ID（旧数据 231 位带数字 id），用于跨次抓取稳定匹配
+  sourceGuestId String?
+  sortOrder     Int     @default(0)
 
-  event     Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  image     Image?  @relation(fields: [imageId], references: [id], onDelete: SetNull)
+  event         Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  image         Image?  @relation(fields: [imageId], references: [id], onDelete: SetNull)
 
   @@index([eventId, sortOrder])
   @@map("event_guests")
@@ -373,7 +378,12 @@ model EventFieldOrigin {
   /// "title" | "startAt" | "venueName" | "priceLow" | ...
   fieldName      String
   sourceRecordId String?
+  /// 该字段最终采用的源
   sourceKey      String
+  /// 同时提供了相同值的其他源。
+  /// 实测旧数据有 87 处是两个源并列，主键保持二元组（查"某字段来自谁"只返回一行），
+  /// 并列的其余源放这里，既不改主键结构也不丢信息
+  alternateSourceKeys String[] @default([])
 
   event          Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
   sourceRecord   SourceRecord? @relation(fields: [sourceRecordId], references: [id], onDelete: SetNull)
@@ -441,6 +451,8 @@ model EventOverride {
 model Organizer {
   id        String   @id @default(cuid())
   name      String   @unique
+  /// 认证徽章文案（"已认证" / "官方"）。旧 organizers 表 11 行全部带此字段
+  title     String?
   url       String?
   color     String?
   imageId   String?
@@ -522,7 +534,13 @@ model Holiday {
 /// 保留 content-addressed 去重（sha256 唯一），但补上索引层。
 model Image {
   id         String   @id @default(cuid())
+  /// 真正的**内容**哈希。
+  /// 注意旧库的文件名是 sha256(源 URL) 而非内容哈希 —— 迁移时会重算，
+  /// 1087 个文件去重后约 1025 个唯一内容。
   sha256     String   @unique
+  /// 原始来源 URL。旧库靠"文件名=URL 哈希"隐式维护 URL→图片 的映射，
+  /// 改用内容哈希后这个映射会丢，所以显式存一列保留反查能力
+  sourceUrl  String?
   mime       String
   width      Int?
   height     Int?
@@ -551,6 +569,8 @@ model ImageRef {
   imageId   String
   ownerType ImageOwnerType
   ownerId   String
+  /// 展示顺序。detail 里的图片是**有序数组**，只有复合主键的话顺序会丢
+  sortOrder Int      @default(0)
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 
   image     Image    @relation(fields: [imageId], references: [id], onDelete: Cascade)
@@ -735,6 +755,8 @@ model AnalyticsAccessEvent {
   visitorHash String?
   userAgent String?
   referrer  String?
+  /// 搜索引擎来源。rollup 的 access_search_engine metric 由此聚合
+  searchEngine String?
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([createdAt])
@@ -751,7 +773,14 @@ model AnalyticsDailyRollup {
   day       DateTime @db.Date
   metric    String
   dimension String   @default("")
+  /// 计数类聚合
   value     Int      @default(0)
+  /// 数值类聚合（耗时等）。实测旧库 1519 行全部至少用到其中一个，
+  /// 例如 access_performance_category 这个 metric 靠 total/min/max 存耗时分布 ——
+  /// 只迁 value 的话后台性能面板会直接没数据
+  total     Decimal? @db.Decimal(18, 3)
+  minValue  Decimal? @db.Decimal(18, 3)
+  maxValue  Decimal? @db.Decimal(18, 3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   @@id([day, metric, dimension])

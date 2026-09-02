@@ -1,0 +1,51 @@
+/* ==========================================================================
+ * 前台样式唯一入口（Tailwind 4 CSS-first + HeroUI 3）
+ * 在 src/main.tsx 里 import 本文件。
+ *
+ * 为什么这里没有 `@import "tailwindcss";`：
+ *   HeroUI 3 的样式包内部已经 import 了 Tailwind。
+ *   实测 @heroui/react/styles → @heroui/styles/dist/index.css，其内容为：
+ *       @layer theme, base, components, utilities;
+ *       @import "tailwindcss";          ← Tailwind 本体在这里
+ *       @import "tw-animate-css";
+ *       @import "./base/*.css"          layer(base)
+ *       @import "./components/index.css" layer(components)
+ *       @import "./themes/default/index.css" layer(theme)
+ *       @import "./utilities/index.css";
+ *       @import "./variants/index.css";
+ *   若在本文件再写一遍 `@import "tailwindcss"`，整份 @theme 变量表与
+ *   preflight 会被重复展开一次（Tailwind 的 index.css 是内联内容，不是引用）。
+ *   同时那一行还会抢先声明 @layer 顺序，与 HeroUI 的声明冲突。
+ *
+ * 另外：HeroUI 3 不再有 Tailwind JS 插件。
+ *   v2 时代的 `tailwind.config.js` + `plugins: [heroui()]` 已废弃，
+ *   本项目没有也不需要 tailwind.config.js / postcss.config.js / autoprefixer。
+ * ========================================================================== */
+
+@import "@heroui/react/styles";
+
+/* --------------------------------------------------------------------------
+ * 源文件扫描范围
+ * Tailwind 4 的自动探测以「出现 @import "tailwindcss" 的那个 CSS 文件所在目录」
+ * 为基准，而本项目那一行位于 node_modules 内部（HeroUI 包里），
+ * 且 Tailwind 默认跳过 node_modules —— 自动探测不可靠。
+ * 因此显式声明，路径相对本文件。
+ *
+ * 不需要为 @heroui/react 补 @source：HeroUI 3 的组件用的是语义类名
+ * （button / button--primary / chip--sm 这类），样式已随包预编译，
+ * 不像 v2 那样在 JS 里拼 Tailwind 原子类，所以无需扫描其产物。
+ * -------------------------------------------------------------------------- */
+@source "../**/*.{ts,tsx}";
+@source "../../index.html";
+
+/* --------------------------------------------------------------------------
+ * 项目设计 token
+ * CLAUDE.md 规定：禁止字面量颜色 / 间距 / 圆角 / 字号，一律取 token。
+ * 覆盖或新增 token 写在下面的 @theme 里，例如：
+ *     @theme {
+ *       --color-brand-500: oklch(62.3% 0.214 259.815);
+ *       --radius-card: 0.75rem;
+ *     }
+ * HeroUI 的默认主题变量在 layer(theme) 中，这里的 @theme 会晚于它生效。
+ * 具体取值由设计阶段确定，此处不预设。
+ * -------------------------------------------------------------------------- */

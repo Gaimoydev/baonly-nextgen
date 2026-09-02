@@ -1,0 +1,14 @@
+/**
+ * frontend/client 的样式入口。
+ *
+ * 这里只做一件事：引入设计 token。tokens.css 内部已经 `@import "tailwindcss"`，
+ * 所以本文件 **不要** 再重复导入 tailwindcss —— 否则 utility 层会被生成两遍。
+ *
+ * ⚠ 这个文件之外禁止新增 .css 文件，也禁止组件里写 inline style / 字面量色值
+ *   （ESLint 的 no-restricted-syntax 会报错）。需要新颜色或新尺度时，
+ *   去 frontend/shared/tokens.css 的 @theme 块里加一档，两侧同步。
+ *
+ * 记得在 src/main.tsx 里 `import "./index.css";`
+ */
+
+@import "@baonly/shared/tokens.css";

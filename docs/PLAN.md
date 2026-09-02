@@ -91,20 +91,27 @@ dependency-cruiser 18.2.0 · prettier 3.9.6 · openapi-typescript 7.13.0
 |---|---|
 | `CLAUDE.md` 规范式(硬约束 / import 边界 / 继承教训 / 明确不做的事) | ✓ 完成 |
 | `pnpm-workspace.yaml` · 根 `package.json` · `.gitignore` | ✓ 完成 |
-| `backend/prisma/schema.prisma` 29 张表 | ✓ 完成 |
-| 依赖安装 + **4 项兼容性验证** | 待做 |
-| 三个 `tsconfig.json`(strict) + 两个 `vite.config.ts` + `nest-cli.json` | 待做 |
-| `eslint.config.mjs` + `.dependency-cruiser.cjs` | 待做 |
-| 设计 token 单一来源 → Tailwind/HeroUI theme + AntD theme token 双接入 | 待做 |
-| 各层 `README.md`(告诉 AI 什么该放这里) | 待做 |
-| PostgreSQL + Redis 起来 · `prisma migrate dev` 建库 | 待做 |
+| `backend/prisma/schema.prisma` 29 张业务表 + 11 枚举 | ✓ 完成 |
+| 依赖安装 + **4 项兼容性验证** | ✓ 完成 |
+| PostgreSQL + Redis 安装/配置/启动 · `prisma migrate dev` 建库 | ✓ 完成(30 表落库) |
+| 应用数据库 + 专用用户 + 最小化 `.env` | ✓ 完成 |
+| 设计 token 单一来源(`frontend/shared`) → Tailwind/HeroUI + AntD 双接入 | ✓ 完成 |
+| `AppConfig` 配置表 + 种子(取代 150+ 个 env 变量) | ✓ 完成 |
+| git init + 首次提交 | ✓ 完成(push 待认证) |
+| 三个 `tsconfig.json`(strict) + 两个 `vite.config.ts` + `nest-cli.json` | 进行中 |
+| `eslint.config.mjs` + `.dependency-cruiser.cjs` | 进行中 |
+| 各层 `README.md`(告诉 AI 什么该放这里) | 进行中 |
 
-**必须验证的 4 项兼容性**(已知踩坑点,装完立刻验,别等写了几十个页面):
+**4 项兼容性 —— 已全部实测,结论如下**:
 
-1. **AntD 5 + React 19** — 需要 `@ant-design/v5-patch-for-react-19`
-2. **HeroUI + Tailwind 版本** — HeroUI 2.x 主要针对 Tailwind 3;Tailwind 4 是 CSS-first 配置。不兼容就锁 Tailwind 3
-3. **HeroUI + React 19** — 底层 React Aria 支持良好,HeroUI 自身要确认
-4. **NestJS 11 + Node 22** — NestJS 11 用 Express 5
+1. **AntD + React 19** → 装到的是 **AntD 6.6.2**,peer 为 `react>=18`,**原生支持 19**。
+   `@ant-design/v5-patch-for-react-19` 是专给 AntD 5 补 `ReactDOM.render` 的,
+   用在 6 上多余且行为未定义 → **已移除**
+2. **HeroUI + Tailwind** → 装到 **HeroUI 3.2.4**,peer 明确要求 `tailwindcss>=4.0.0`。
+   原先"HeroUI 只支持 Tailwind 3"的判断是过时认知 —— 它反过来**强制** Tailwind 4
+3. **HeroUI + React 19** → peer `react>=19.0.0`,通过。
+   已显式安装它声明的 react-aria peer,避免幽灵依赖
+4. **NestJS + Node 22** → 锁 **11.2.3**(不用 12,理由见版本锁定决策),`pnpm peers check` 零问题
 
 **验收**:`pnpm lint && pnpm typecheck` 全绿;三个空壳应用能启动;**故意违反一条硬约束(如写个 401 行的文件)能被 ESLint 拦住**。
 
@@ -118,27 +125,27 @@ dependency-cruiser 18.2.0 · prettier 3.9.6 · openapi-typescript 7.13.0
 |---|---|
 | `docs/migration-map.md` | 旧 21 表 + BLOB → 新 29 表的字段级映射,含时区/布尔/价格转换规则与校验断言 |
 | 迁移脚本 | 读 `data_e8ktN` → 写 PG。可重复执行(幂等) |
-| 图片迁移 | 1088 张 → 两级分片 `ab/cd/<sha256>.webp` + `Image`/`ImageRef` 索引 |
+| 图片迁移 | 1087 张 → 两级分片 `ab/cd/<sha256>.webp` + `Image`/`ImageRef` 索引 |
 
 **数据量基线**(实测):
 
 ```
-sources/_merged.sqlite    148 个 Event
-sources/{bilibili,cpp,dlcomic}.sqlite   257 条 SourceRecord
+sources/_merged.sqlite    148 个爬取活动（+ manual_events 17 → 共 165 个 Event）
+sources/{bilibili,cpp,dlcomic}.sqlite   259 条 SourceRecord（不是 257，见下）
 baonly.sqlite  event_overrides 123 · event_tags 66 · manual_events 17
                organizers 11 · disabled_details 11 · site_settings 13
                tag_styles 7 · hidden_events 5 · admin_tokens 2
                announcements 1 · api_keys 1 · source_sessions 1
                analytics_daily_rollups 1519 · analytics_ip_geo 1259
                analytics 明细 664k 行 ← 只迁最近 30 天
-images/        1088 张
+images/        1087 张（目录 1088 个文件，_hosted.json 不是图片）
 calendar.json  → Holiday 表
 cache.json     弃(5 月旧快照)
 ```
 
 **最危险的一步是时间字段。** 旧库把 Asia/Shanghai 的 ISO 串存在 `TEXT` 里,迁 `timestamptz` 时同类错误会**一次性污染全表历史数据且不可逆**。迁移脚本必须先在副本上跑,并断言若干已知活动的时间与线上完全一致。
 
-**验收**:148 Event / 257 SourceRecord / 123 Override / 1088 Image 全部落库;抽样活动 `startAt` 零偏移;`SourceRecord.eventId IS NULL` 的孤儿数为 0。
+**验收**:**165** Event(148 爬取 + 17 人工) / **259** SourceRecord / 123 Override / **1087** Image 全部落库;抽样活动 `startAt` 零偏移;`SourceRecord.eventId IS NULL` 的孤儿数为 0。
 
 ---
 
@@ -154,6 +161,10 @@ cache.json     弃(5 月旧快照)
 | `backend/src/core/matching/` | 判同算法**重新实现**(不搬旧代码),配 Vitest |
 | `docs/baseline.json` + Vitest 断言 | **业务不变量基准**(取代原先的"端点 fixture"方案) |
 
+> ⚠ **基线数字更正(2026-09-03 实测)**:早期写的 148/257/1088 有误 —— Event 要含 manual_events 的 17 个(共 165);
+> SourceRecord 的 257 是按去重后的源**种类**误算(44×1+99×2+5×3),真实条数 259(1 个活动在同一源下有 2 条记录);
+> images 目录里 1 个 `_hosted.json` 不是图片,真实 1087 张。
+
 ### 为什么不录端点 fixture
 
 原计划是录下 74 个端点的真实响应做契约基准。**这个思路是错的**——它把"功能对等"混淆成了"响应对等"。旧响应本身就是历史包袱:单个 event 38 个字段,`cachedCover`/`cachedBanner` 与 `cover`/`banner` 并存、`bilibiliId` 源特定字段泄进统一模型、`fieldSources`/`sourceRecords`/`sourceMissingStreak` 等内部数据直接暴露给前台。新 API 的 DTO 要重新设计,拿旧响应当基准等于把债当成标准。而且公共端点是加密的,录制成本也高。
@@ -167,7 +178,7 @@ cache.json     弃(5 月旧快照)
         各源记录数 · 多源合并分布(44 单源 / 99 双源 / 5 三源)
         票档总数 · 有票档的活动数 · 标签分布 · 主办方分布
 分布    各城市 / 省份活动数 · 各状态(进行中 / 即将开始 / 已结束)计数
-映射    判同聚类:257 条源记录 → 148 个活动的归属关系(核心断言)
+映射    判同聚类:259 条源记录 → 148 个爬取活动的归属关系(核心断言)
 抽样    若干具体活动的关键字段(标题 / 时间 / 场馆 / 价格区间 / 票档名列表)
 ```
 
@@ -183,7 +194,7 @@ bilibili「第二届」  =  cpp「ONLY-02」    届数跨源归一
 + merge-harness 里那 6 组已知正确的跨源合并
 ```
 
-**验收**:Vitest 全绿;用新算法重跑 257 条源记录,聚类结果与线上 148 个活动**完全一致**。
+**验收**:Vitest 全绿;用新算法重跑 259 条源记录,聚类结果与线上 148 个爬取活动**完全一致**。
 
 ---
 

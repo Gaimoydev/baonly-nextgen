@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // 只管构建工具链自己的文件（vite.config.ts 等）。
+  // 单独一份的理由：它们跑在 Node 里、不该拿到 DOM 的 lib，也不该被 React 的 jsx 设置影响。
+  //
+  // 同样不写 "types": ["node"] —— 前端 workspace 解析不到 @types/node。
+  // 因此 vite.config.ts 里 **不要** 用 process / __dirname / path 等 Node API；
+  // 需要环境变量时用 Vite 的 `loadEnv(mode, ...)`，需要路径时用 `new URL(..., import.meta.url)`。
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+
+    "strict": true
+  },
+
+  "include": ["vite.config.ts", "vitest.config.ts"]
+}

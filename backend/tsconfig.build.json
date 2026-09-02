@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // `nest build` 专用：与 tsconfig.json 完全一致，只是把测试与 fixture 排除在产物之外。
+  // 这是 NestJS 的标准双 tsconfig 布局 —— tsconfig.json 给 IDE/ESLint/typecheck 用
+  // （必须包含测试文件），tsconfig.build.json 给编译用（必须不含测试文件）。
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test",
+    "**/*.spec.ts",
+    "**/*.test.ts",
+    "**/__tests__/**",
+    "**/fixtures/**"
+  ]
+}

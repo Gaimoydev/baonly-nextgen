@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // frontend/shared（@baonly/shared）—— 两个前端共用的叶子包。
+  //
+  // 这个包 **没有构建步骤**：package.json 的 exports 直接指向 .ts 源文件，
+  // 由消费方（client / dashboard）的 Vite + tsc 就地编译。
+  // 所以这份 tsconfig 只有两个作用：
+  //   1. 让 `pnpm typecheck` 能单独检查这个包
+  //   2. 让 ESLint 的 type-aware 规则（projectService）能找到它所属的 project ——
+  //      否则会报 "file was not found by the project service"
+  //
+  // 约束：这里只放 **纯数据 + 纯函数**（设计 token、OpenAPI 类型）。
+  // 不得依赖 React、任何组件库、或某一侧的代码 —— ESLint 有对应的 import 禁令。
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "declaration": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true
+  },
+
+  "include": ["*.ts", "**/*.ts"],
+  "exclude": ["node_modules", "api-types.d.ts"]
+}

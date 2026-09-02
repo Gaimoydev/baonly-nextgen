@@ -1,0 +1,14 @@
+{
+  // 给 backend 根目录下的工具类脚本用（目前是 prisma.config.ts）。
+  // 这些文件在 rootDir(./src) 之外，混进主 tsconfig 会触发 TS6059，
+  // 因此单独开一个 project：只做类型检查，不产出任何文件。
+  //
+  // 用法：npx tsc --noEmit -p tsconfig.tools.json
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["prisma.config.ts", "*.config.ts"],
+  "exclude": ["dist", "node_modules", "src"]
+}

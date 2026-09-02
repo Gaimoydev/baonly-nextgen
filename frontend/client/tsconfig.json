@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // frontend/client —— Vite 8 + React 19 + HeroUI 3 + Tailwind 4。
+  //
+  // moduleResolution: "bundler" 是关键。它让 `@baonly/shared/design-tokens`
+  // 这类 workspace 包的 exports 子路径能直接解析到 **未编译的 .ts 源文件**
+  // （frontend/shared 没有构建步骤，exports 直接指向 .ts）。
+  // 换成 node10/node16 都解析不了，会报 "Cannot find module '@baonly/shared/...'"。
+  //
+  // 注意：这里 **不能** 写 "types": ["node"] —— @types/node 只装在 backend，
+  // 前端 workspace 里解析不到（pnpm 严格隔离），写了会报 TS2688。
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "useDefineForClassFields": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // 打包由 Vite 负责，tsc 只做类型检查
+    "noEmit": true,
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    // 未使用变量交给 ESLint（能配 ^_ 豁免，tsc 不能）
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+
+  "include": ["src"]
+}

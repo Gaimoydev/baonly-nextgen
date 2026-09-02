@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // frontend/dashboard —— Vite 8 + React 19 + Ant Design 6。不用 Tailwind。
+  //
+  // moduleResolution: "bundler" 是关键：`@baonly/shared/design-tokens` 的 exports
+  // 子路径直接指向未编译的 .ts 源文件（frontend/shared 无构建步骤），
+  // 只有 bundler 解析能命中。后台从那里取 `antdToken(mode)` 喂给
+  // AntD 的 `<ConfigProvider theme={{ token: antdToken(mode) }}>`。
+  //
+  // 注意：不能写 "types": ["node"] —— @types/node 只装在 backend，这里解析不到。
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "useDefineForClassFields": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "noEmit": true,
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+
+  "include": ["src"]
+}

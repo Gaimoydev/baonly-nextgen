@@ -14,13 +14,20 @@
 
 ```
 backend/                  NestJS + Prisma。唯一的后端服务
-  prisma/schema.prisma    数据模型单一真相源(29 张表)
+  prisma/schema.prisma    数据模型单一真相源(29 张业务表 + 11 枚举)
   src/
-    core/                 业务逻辑。不得 import 任何 HTTP/框架层的东西
-      matching/           判同算法(纯函数,必须可单测)
-      repositories/       数据访问。唯一允许 import PrismaClient 的地方
+    core/                 ★ 纯领域逻辑层。零框架依赖、零 IO,全部可单测
+      matching/           判同算法(纯函数)
+      normalize/          标题/场馆/城市/届数的归一化(纯函数)
+      time/               Asia/Shanghai 时区换算(纯函数)
+    infra/                ★ 基础设施层。允许用 NestJS DI 和外部客户端
+      prisma/             PrismaService(Prisma 7 driver adapter)
+      redis/              RedisService(ioredis)
+      config/             AppConfigService(读 AppConfig 表 + Redis 缓存 + 热更新)
+      repositories/       数据访问。**唯一允许 import @prisma/client 的地方**
+      storage/            图片存储(两级分片) + SCDN 上传
     sources/              3 个爬虫解析器(bilibili / cpp / dlcomic)
-    modules/              NestJS 功能模块(controller + service + dto)
+    modules/              NestJS 功能模块(controller + service)
     contracts/            DTO + class-validator 装饰器 → 自动生成 OpenAPI
     main.ts               入口 1:HTTP API
     worker.ts             入口 2:常驻进程(cron + 爬虫 + sharp + SCDN)
@@ -45,13 +52,22 @@ docs/                     feature-parity.md · migration-map.md · sources.md ·
 ### import 边界
 
 ```
-core/          不得 import  @nestjs/*  ← 保持纯业务,可单测
-modules/       不得 import  PrismaClient  ← 必须经 core/repositories/
-sources/       不得 import  modules/      ← 爬虫不依赖 HTTP 层
+core/          不得 import  @nestjs/*、@prisma/client、ioredis、任何 IO
+               ← 纯函数层。这条是最重要的边界:它保证判同算法能脱离
+                 框架和数据库直接单测,而这是上一代最缺的能力
+infra/         可以 import  @nestjs/*、@prisma/client、ioredis
+               不得 import  modules/      ← 基础设施不反向依赖业务模块
+modules/       不得 import  @prisma/client ← 必须经 infra/repositories/
+sources/       不得 import  modules/、@nestjs/common 之外的框架件
+               ← 爬虫解析尽量保持纯函数,IO 由调用方注入
 frontend/*     不得 import  backend/ 的运行时代码  ← 只用生成的 OpenAPI 类型
 client/        不得 import  antd          ← 前台只用 HeroUI
 dashboard/     不得 import  @heroui/*     ← 后台只用 AntD
 ```
+
+> 这套分层是修正过的:最初把 `repositories/` 放在 `core/` 下,与"core 不得 import
+> @nestjs/*"直接冲突(仓储需要 DI 注入 Prisma)。现在 `core/` 是**真正的纯函数层**,
+> 一切 IO 和框架依赖下沉到 `infra/`。
 
 ## 后端规范
 
@@ -84,7 +100,13 @@ dashboard/     不得 import  @heroui/*     ← 后台只用 AntD
 ③ 干预层  EventOverride + Event 上的 visibility / detailState / sourceState 枚举
 ```
 
-**实测依据(2026-08-31)**:257 条源记录 → 148 个活动,多源合并占 **70%**;`fieldSources` **100%** 在用、`changeNotices` **69%** 在用、票档 **84%** 在用。因此 `SourceRecord` / `EventFieldOrigin` / `ChangeNotice` / `Ticket` 都不可简化掉。
+**实测依据**:**259** 条源记录 → **165** 个 Event(148 个爬取 + 17 个人工登记)。
+爬取的 148 个里:单源 44 / 双源 99 / 三源 5 → **多源合并占 70%**。
+`fieldSources` **100%** 在用、`changeNotices` **69%** 在用、票档 **84%** 在用。
+因此 `SourceRecord` / `EventFieldOrigin` / `ChangeNotice` / `Ticket` 都不可简化掉。
+
+> ⚠ 别把 259 记成 257。257 是按 `sources[]`(去重后的源**种类**)算的 44×1+99×2+5×3;
+> 真实记录条数看 `sourceRecords[]` = 259(有 1 个活动在同一个源下有 2 条记录)。
 
 - `Event` 的规范字段是**物化**的(爬虫跑完写入),前台查询为纯 SQL 无计算。改判同规则后需重跑物化。
 - 状态用枚举字段,**不再**用"每张只存一个布尔"的标记表(上一代有 4 张)。
@@ -106,6 +128,25 @@ dashboard/     不得 import  @heroui/*     ← 后台只用 AntD
 | Android Chrome 页面上下文 `new Notification()` 抛错 | 走 ServiceWorker 通知 |
 | 图片平铺在单目录、无索引,无法知道图属于谁 | `Image` + `ImageRef` 表;存储路径两级分片 |
 | 分析仪表盘直接扫 66 万行明细,阻塞整个 DB | 仪表盘只读 `AnalyticsDailyRollup`,明细钻取强制时间窗 |
+
+## 配置架构：只有密钥留 env，其余进数据库
+
+上一代 `.env.example` 有 **150+ 个变量**，改任何行为都要改文件 + 重启。新项目反过来：
+
+```
+留在 .env    极敏感 + 运行时必需：DATABASE_URL · REDIS_URL · NODE_ENV · PORT · TZ
+             以及凭据类（CPP 账号密码 · WxPusher token · SCDN 密钥）
+进数据库     其余全部 → AppConfig 表（app_configs），后台随时改、热生效、不重启
+```
+
+该进数据库的典型项：爬虫并发/重试/超时、图片压缩质量与尺寸、缓存 TTL、限流阈值、SEO 模板、通知模板、各源 URL 与开关、分析采样率、保留期天数、会话 TTL。
+
+`AppConfig` 带 `category` / `valueType` / `constraints` / `label` / `isSecret` / `requiresRestart` 元数据，目的是让**后台配置页由元数据驱动自动生成表单** —— 加一个配置项只需往 registry 插一行，不必改前端。
+
+- **必须**：新增可调参数时加进 `core/config/config.registry.ts`，**不要**新增 env 变量
+- **必须**：`isSecret: true` 的项，公共 API 绝不返回，后台以掩码显示
+- **必须**：写入时按 `constraints` 校验，非法值拒绝
+- 回退链：数据库 → registry 默认值。库里没有该 key 时用默认值，不报错
 
 ## 明确不做的事
 

@@ -57,13 +57,22 @@ Git Bash(MSYS2) 会自动转换命令行里的类 Unix 路径。给 **cygwin 编
 - [x] 依赖全部安装,`pnpm peers check` 零问题
 - [x] 4 项兼容性验证（结论见 PLAN.md 的版本锁定决策表）
 - [x] PostgreSQL + Redis 安装/配置/启动
-- [x] 应用数据库 + 专用用户 + 最小化 `.env`
-- [ ] 首次 `prisma migrate dev --name init`
-- [ ] `eslint.config.mjs` + `.dependency-cruiser.cjs`（把硬约束变成可执行）
-- [ ] 三个 `tsconfig.json`(strict) + 两个 `vite.config.ts` + `nest-cli.json`
-- [ ] 设计 token 单一来源 → Tailwind/HeroUI + AntD 双接入
-- [ ] 各层 `README.md`
-- [ ] git init + 关联 `Gaimoydev/baonly-nextgen`（private）+ 首次提交
+- [x] 应用数据库 + 专用用户 + 最小化 `.env`（只 6 项）
+- [x] `prisma migrate dev --name init` → **30 张表 + 11 枚举落库**
+- [x] 设计 token 单一来源 `frontend/shared`（TS 真相源 + Tailwind 4 CSS 投影 + AntD 适配器）
+- [x] `AppConfig` 配置表 + 种子 → **51 项配置落库**（9 类）
+- [x] backend 骨架：`infra/{prisma,redis,config}` · `app.module` / `worker.module` · 两个入口 + 崩溃守卫
+- [x] git init + 首次提交（**push 待认证**，见下）
+- [ ] `eslint.config.mjs` + `.dependency-cruiser.cjs`（config-agent 进行中）
+- [ ] 三个 `tsconfig.json`(strict) + 两个 `vite.config.ts` + `nest-cli.json`（config-agent 进行中）
+- [ ] 各层 `README.md`（config-agent 进行中）
+
+### ⚠ GitHub push 需要认证
+
+远端已关联 `https://github.com/Gaimoydev/baonly-nextgen.git`（private），但本机
+**没有 GitHub 凭据**（`gh` CLI 未安装，`git ls-remote` 无响应=在等交互式输入）。
+需要其一：配置 PAT / 配 SSH key / 装 `gh` 并 `gh auth login`。
+本地提交是安全的，`.env` 已确认被 `.gitignore` 排除。
 
 ### 阶段 1 · 数据迁移
 - [ ] `docs/migration-map.md`
@@ -108,10 +117,14 @@ Git Bash(MSYS2) 会自动转换命令行里的类 Unix 路径。给 **cygwin 编
 ## 数据迁移基线（实测 `D:\gaimo\baonly_web\data_e8ktN`）
 
 ```
-sources/_merged.sqlite   148 个 Event（payload 是 v8.serialize 的 BLOB）
-sources/bilibili|cpp|dlcomic.sqlite   257 条源记录
-  多源合并分布:单源 44 / 双源 99 / 三源 5  → 多源占 70%
+sources/_merged.sqlite   148 个爬取活动（payload 是 v8.serialize 的 BLOB）
+  + manual_events 17 个人工登记（旧库独立表，运行时 union）→ 新库共 165 个 Event
+sources/bilibili|cpp|dlcomic.sqlite   259 条源记录
+  ⚠ 不是 257！257 是按 sources[](去重后的源"种类")算的 44×1+99×2+5×3；
+    真实条数看 sourceRecords[] = 259（1 个活动在同一源下有 2 条记录）
+  多源合并分布（爬取的 148 个）:单源 44 / 双源 99 / 三源 5  → 多源占 70%
   含票档 124 · 含 fieldSources 148(100%) · 含 changeNotices 102(69%)
+  嘉宾 245 位（225 位有简介、231 位有源站 id）
 baonly.sqlite  event_overrides 123 · event_tags 66 · manual_events 17
                organizers 11 · disabled_details 11 · site_settings 13
                tag_styles 7 · hidden_events 5 · admin_tokens 2
@@ -120,7 +133,10 @@ baonly.sqlite  event_overrides 123 · event_tags 66 · manual_events 17
                analytics 明细 664k 行 ← 只迁最近 30 天
                client_blocks / hidden_tickets / removed_source_events 为 0 行
                但【功能是活的】，新 schema 不得省略
-images/  1088 张 webp    calendar.json → Holiday    cache.json 弃（5 月旧快照）
+images/  1087 张 webp（目录里 1088 个文件，其中 _hosted.json 是索引不是图片）
+         ⚠ 旧文件名是 sha256(源 URL) 不是内容哈希 → 迁移时重算内容哈希，
+           去重后约 1025 个唯一内容；Image.sourceUrl 保留 URL→图片 反查
+calendar.json → Holiday    cache.json 弃（5 月旧快照）
 ```
 
 **最危险的一步**:时间字段。旧库把 Asia/Shanghai 的 ISO 串存在 `TEXT` 里,
