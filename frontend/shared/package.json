@@ -1,0 +1,11 @@
+{
+  "name": "@baonly/shared",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    "./design-tokens": "./design-tokens.ts",
+    "./tokens.css": "./tokens.css",
+    "./api-types": "./api-types.d.ts"
+  }
+}

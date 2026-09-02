@@ -1,0 +1,32 @@
+{
+  // 全仓共享的严格基线。backend / client / dashboard 各自 extends 本文件，
+  // 只覆盖「模块系统」和「产物」相关的选项，不得放松这里的类型严格度。
+  //
+  // 注意：本文件不设 module / moduleResolution / lib，
+  // 因为 backend 是 CommonJS、两个前端是 ESM + bundler 解析，三者不能共用。
+  "compilerOptions": {
+    // Node 22 与现代浏览器均完整支持 ES2023
+    "target": "ES2023",
+
+    // ---- 严格性：以下为硬底线 ----
+    "strict": true,
+    // 下标访问结果自动带 undefined，逼出「数组越界 / Record 取不存在的 key」这类隐藏 bug
+    "noUncheckedIndexedAccess": true,
+    // 覆写父类成员必须显式写 override
+    "noImplicitOverride": true,
+    // 区分「属性可缺省」与「属性可为 undefined」，避免把 undefined 显式写进可选字段
+    "exactOptionalPropertyTypes": true,
+
+    // 大小写敏感：Windows 本地开发、Linux 生产，必须统一
+    "forceConsistentCasingInFileNames": true,
+
+    // ---- 互操作与构建 ----
+    // 跳过 node_modules 里 .d.ts 的互检，显著提速；不影响自有代码的检查强度
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    // 每个文件独立转译（Vite / SWC / esbuild 的前提）。
+    // 副作用：重新导出类型必须写 `export type { X }`。
+    "isolatedModules": true
+  }
+}
