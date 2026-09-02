@@ -35,6 +35,20 @@ export function createPrismaClient(options: PrismaFactoryOptions): AppPrismaClie
     {
       connectionString: options.connectionString,
       max: options.maxConnections ?? 10,
+      // ★ 必须强制 session 时区为 UTC，否则全库 timestamptz 偏 8 小时。
+      //
+      // Prisma 6 及以前的 Rust 引擎自己就会这么做；Prisma 7 换成 driver adapter
+      // 之后这个责任转移给了调用方。本机 postgresql.conf 里 timezone='Asia/Shanghai'，
+      // 不覆盖的话读写各偏 8 小时。
+      //
+      // ⚠ 这个 bug **过不了任何基于 Prisma 的自校验** —— 写偏 -8h、读偏 +8h，
+      //   方向相反互相抵消，「Prisma 写 → Prisma 读」的往返测试完全正常。
+      //   只有原生 SQL、导出、ICS、analytics 的 AT TIME ZONE 分组、
+      //   以及别的客户端才看得见错误。实测方法：EXTRACT(EPOCH) 绕开客户端解析。
+      //
+      // 我们全链路存 timestamptz（绝对时刻），业务时区换算一律在应用层用
+      // core/time/shanghai.ts 做 —— 驱动层就该是 UTC。别改这一行。
+      options: "-c timezone=UTC",
     },
     {
       ...(schema === undefined ? {} : { schema }),

@@ -100,8 +100,9 @@ real-data.spec.ts 要用 node:fs 读 257 条真实源记录跑判同回归。
 > v1 把 `repositories/` 放在 `core/` 下,与"core 不得 import @nestjs/\*"直接冲突
 > (仓储需要 DI 注入 Prisma);v2 拆出独立的 `infra/` 层;
 > **v3(当前,2026-09-03)** `infra/` 合并回 `modules/` —— DI 包装本来就是 NestJS 的事,
-> 单独一层只是把 `modules/` 的一半搬了个家。`core/` 保留 `prisma/`、`redis/`
-> 两个纯工厂作为唯一豁免。
+> 单独一层只是把 `modules/` 的一半搬了个家,还留下"`modules/config/` 与
+> `infra/config/` 的界线在哪"这种无解歧义(已导致 Prisma/Redis 各被实现两套)。
+> `core/` 保留 `prisma/`、`redis/`、`repositories/` **三个**数据层目录作为唯一豁免。
 
 **判断一个文件该放 `core/` 还是 `modules/`,只有一条判据:它要不要 NestJS。**
 不看名字、不看它"像不像基础设施"。
