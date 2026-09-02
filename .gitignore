@@ -34,3 +34,6 @@ Thumbs.db
 
 # 迁移用的旧数据快照（体积大，不入库）
 migration-data/
+
+# subagent 的临时脚本 / 探查产物
+tmp/
