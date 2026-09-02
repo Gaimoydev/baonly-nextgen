@@ -24,6 +24,13 @@ coverage/
 playwright-report/
 test-results/
 .vite/
+*.tsbuildinfo
+
+# 约束验证 / 依赖分析的一次性产物
+dc.*.json
+dc.err.txt
+__*probe*.ts
+__*probe*.tsx
 
 # 编辑器 / 系统
 .DS_Store

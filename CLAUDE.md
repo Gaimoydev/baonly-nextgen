@@ -16,19 +16,23 @@
 backend/                  NestJS + Prisma。唯一的后端服务
   prisma/schema.prisma    数据模型单一真相源(29 张业务表 + 11 枚举)
   src/
-    core/                 ★ 纯领域逻辑层。零框架依赖、零 IO,全部可单测
+    core/                 ★ 纯逻辑层。**不要 NestJS**,可直接单测
       matching/           判同算法(纯函数)
       normalize/          标题/场馆/城市/届数的归一化(纯函数)
       time/               Asia/Shanghai 时区换算(纯函数)
-    infra/                ★ 基础设施层。允许用 NestJS DI 和外部客户端
-      prisma/             PrismaService(Prisma 7 driver adapter)
-      redis/              RedisService(ioredis)
-      config/             AppConfigService(读 AppConfig 表 + Redis 缓存 + 热更新)
-      repositories/       数据访问。**唯一允许 import @prisma/client 的地方**
-      storage/            图片存储(两级分片) + SCDN 上传
+      image/              scdn:// 协议解析 / 哈希分片路径 / 格式判定(纯函数)
+      config/             配置 registry + constraints 校验 + ConfigService(纯类)
+      health/ logging/    健康探针 / 日志 sink 抽象(纯函数 + 接口)
+      prisma/ redis/      客户端构造工厂 ─┐ 三个目录是 @prisma/client、ioredis
+      repositories/       数据访问、业务查询 ┘ 的**唯一豁免**,详见下方 import 边界
     sources/              3 个爬虫解析器(bilibili / cpp / dlcomic)
-    modules/              NestJS **功能**模块(controller + service)。根组合模块不放这里
+    modules/              ★ NestJS DI 层。@Injectable / OnModuleInit / DI token / 模块注册
+      prisma/ redis/      把 core/ 的工厂包成 provider(@Global)
+      config/             AppConfigService(读 AppConfig 表 + Redis 缓存 + 热更新)
+      storage/            图片存储(两级分片) + SCDN 上传。**sharp 只在 worker 侧的 provider**
+      health/ worker/     健康检查端点 / cron 任务
     contracts/            DTO + class-validator 装饰器 → 自动生成 OpenAPI
+    bootstrap/ common/    进程自举(崩溃守卫/优雅关闭/角色/Swagger) · 全局管道过滤器拦截器
     app.module.ts         根模块 1:API 进程(**不注册** ScheduleModule)
     worker.module.ts      根模块 2:worker 进程(注册 ScheduleModule)
     main.ts               入口 1:HTTP API
@@ -59,27 +63,55 @@ docs/                     feature-parity.md · migration-map.md · sources.md ·
 ### import 边界
 
 ```
-core/          不得 import  @nestjs/*、@prisma/client、ioredis、任何 IO
+core/          不得 import  @nestjs/*、class-validator/transformer、reflect-metadata
+               不得 import  @prisma/*、ioredis、pg、sharp、cheerio
+               不得 import  任何 IO(node:fs / net / http / child_process …)
+               不得 import  modules/、sources/、contracts/、bootstrap/(不许反向依赖)
                ← 纯函数层。这条是最重要的边界:它保证判同算法能脱离
                  框架和数据库直接单测,而这是上一代最缺的能力
-infra/         可以 import  @nestjs/*、@prisma/client、ioredis
-               不得 import  modules/      ← 基础设施不反向依赖业务模块
-modules/       不得 import  @prisma/client ← 必须经 infra/repositories/
+
+core/prisma/       ★ 唯一豁免:三个「数据层」目录。
+core/redis/          允许 import @prisma/client、@prisma/adapter-pg、pg、ioredis
+core/repositories/   —— 它们的**全部职责**就是"数据怎么存取"。
+                     repositories/ 是 **唯一允许 import @prisma/client 的地方**。
+                     仍然不得 import @nestjs/*,所以照样能在测试里直接构造
+                     (repository 收一个 PrismaClient 参数;event-select.ts 这类
+                     只用 `Prisma.*` 的类型拼查询描述符,根本不执行查询)。
+                     豁免只开到这三个目录,别把别的东西塞进来"顺便"拿到豁免。
+                     判据:这个文件是不是"数据怎么存取"本身?不是就别放进来。
+
+modules/       不得 import  @prisma/*   ← 需要客户端时注入 PRISMA_CLIENT token,
+                                          业务查询写在 core/repositories/
 sources/       不得 import  modules/、@nestjs/common 之外的框架件
                ← 爬虫解析尽量保持纯函数,IO 由调用方注入
 frontend/*     不得 import  backend/ 的运行时代码  ← 只用生成的 OpenAPI 类型
+                 (含 type-only:depcruise 开了 tsPreCompilationDeps)
 client/        不得 import  antd          ← 前台只用 HeroUI
 dashboard/     不得 import  @heroui/*     ← 后台只用 AntD
+frontend/shared/  不得 import  react、任何组件库、client/、dashboard/、backend/
+               ← 它是叶子包:谁都能依赖它,它不依赖任何人
+
+测试文件(*.spec.ts / *.test.ts)豁免上述 import 禁令 ——
+real-data.spec.ts 要用 node:fs 读 257 条真实源记录跑判同回归。
+"零 IO"是对生产代码的约束,拦住测试等于把这条边界最大的收益(可测性)自己掐掉。
 ```
 
-> 这套分层是修正过的:最初把 `repositories/` 放在 `core/` 下,与"core 不得 import
-> @nestjs/*"直接冲突(仓储需要 DI 注入 Prisma)。现在 `core/` 是**真正的纯函数层**,
-> 一切 IO 和框架依赖下沉到 `infra/`。
+> **分层演化史(别再走回头路)**
+> v1 把 `repositories/` 放在 `core/` 下,与"core 不得 import @nestjs/\*"直接冲突
+> (仓储需要 DI 注入 Prisma);v2 拆出独立的 `infra/` 层;
+> **v3(当前,2026-09-03)** `infra/` 合并回 `modules/` —— DI 包装本来就是 NestJS 的事,
+> 单独一层只是把 `modules/` 的一半搬了个家。`core/` 保留 `prisma/`、`redis/`
+> 两个纯工厂作为唯一豁免。
 
-**判断一个文件该放 `core/` 还是 `infra/`,只有一条判据:它是否碰 IO 或框架。**
-不看名字。`core/` 里不该出现 `.service.ts` 后缀(会被误读成可注入的 Nest 服务),
-纯逻辑用 `.resolver.ts` / `.registry.ts` / 直接函数名。
-「创建数据库连接」「创建 Redis 连接」属于基础设施,即使写成纯工厂函数也归 `infra/`。
+**判断一个文件该放 `core/` 还是 `modules/`,只有一条判据:它要不要 NestJS。**
+不看名字、不看它"像不像基础设施"。
+
+- 构造 PrismaClient / Redis 连接的**纯工厂函数** → `core/prisma/`、`core/redis/`
+  (能在测试里直接调用,这就是它留在 core 的价值)
+- 给那个工厂套上 `@Injectable()` / `OnModuleInit` / DI token → `modules/prisma/`、`modules/redis/`
+
+`core/` 里出现 `.service.ts` 后缀是可以的(比如 `core/config/config.service.ts`
+是个构造函数收依赖的**纯类**),但它必须零装饰器、零 `@nestjs/*`。
 
 ### 验证命令(只有这一个入口)
 
