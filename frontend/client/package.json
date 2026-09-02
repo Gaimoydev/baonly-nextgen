@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@baonly/shared": "workspace:*",
     "@heroui/react": "^3.2.4",
     "@hookform/resolvers": "^5.9.1",
     "@react-aria/i18n": "^3.13.1",

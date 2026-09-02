@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.4",
+    "@baonly/shared": "workspace:*",
     "@tanstack/react-query": "^5.102.8",
     "antd": "^6.6.2",
     "dayjs": "^1.11.23",

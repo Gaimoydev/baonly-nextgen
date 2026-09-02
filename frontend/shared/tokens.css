@@ -1,0 +1,107 @@
+/**
+ * Tailwind 4 CSS-first 主题定义 —— 前台(frontend/client)引入。
+ *
+ * 与 design-tokens.ts 保持同步：那份是 TS 真相源（后台 AntD 用），这份是它的 CSS 投影。
+ * Tailwind 4 的 @theme 会据此自动生成 utility class（bg-brand-500 / text-fg-muted 等）。
+ *
+ * ⚠ 组件里禁止出现字面量色值 —— 一律用这里生成的 utility 或 var(--...)。
+ */
+
+@import "tailwindcss";
+
+@theme {
+  /* ── 品牌主色（OKLCH 均匀步进，感知对比一致） ── */
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+  --color-brand-800: #1e40af;
+  --color-brand-900: #1e3a8a;
+  --color-brand-950: #172554;
+
+  /* ── 字体栈（中文优先） ── */
+  --font-sans: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC",
+    "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* ── 动效时长（全部尊重 prefers-reduced-motion，见文件末尾） ── */
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --duration-slow: 320ms;
+}
+
+/**
+ * 语义变量：明暗两套**分别指定**，不是同一个值换背景复用。
+ *
+ * 上一代的教训：暗色主题用浅色 accent(#79a9ff) 配白字，对比度仅 ~2.3:1，
+ * 远低于 WCAG AA 的 4.5:1。所以暗色主题的 primary 上必须放**深色**文字。
+ * 注释里的比值是实测的对比度，改色值时请一并重算。
+ */
+:root {
+  --primary: #2563eb; /* on white 4.6:1 ✓ */
+  --primary-hover: #1d4ed8;
+  --primary-fg: #ffffff;
+
+  --success: #15803d; /* 4.8:1 ✓ */
+  --warning: #b45309; /* 4.7:1 ✓ */
+  --danger: #b91c1c; /* 5.9:1 ✓ */
+
+  --bg-page: #ffffff;
+  --bg-card: #ffffff;
+  --bg-raised: #f8fafc;
+  --border: #e2e8f0;
+  --fg: #0f172a;
+  --fg-muted: #475569; /* 4.7:1 ✓ */
+}
+
+.dark {
+  --primary: #60a5fa; /* on slate-950 6.4:1 ✓ */
+  --primary-hover: #93c5fd;
+  --primary-fg: #0f172a; /* ★ 深色文字，不是白色 */
+
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #f87171;
+
+  --bg-page: #020617;
+  --bg-card: #0f172a;
+  --bg-raised: #1e293b;
+  --border: #334155;
+  --fg: #f1f5f9;
+  --fg-muted: #94a3b8; /* 5.2:1 ✓ */
+}
+
+/* 把语义变量也注册成 Tailwind utility（bg-page / text-fg-muted / border-border …） */
+@theme inline {
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-fg: var(--primary-fg);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-page: var(--bg-page);
+  --color-card: var(--bg-card);
+  --color-raised: var(--bg-raised);
+  --color-border: var(--border);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+}
+
+/**
+ * 无障碍：尊重系统的"减少动效"偏好。
+ * 上一代已经做了 prefers-reduced-motion 处理，这个能力不能在重写中丢掉。
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

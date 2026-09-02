@@ -1,0 +1,43 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // ---- 模块系统：CommonJS ----
+    // backend/package.json 刻意不写 "type": "module"。
+    // 旧版装饰器 + emitDecoratorMetadata 在 CJS 下最稳，勿改成 ESM。
+    "module": "commonjs",
+    "moduleResolution": "node",
+
+    // ---- 装饰器：NestJS 的命门 ----
+    // DI 容器靠 emitDecoratorMetadata 写入的 design:paramtypes 反查构造函数参数类型；
+    // class-validator / class-transformer 同理。两项缺一，注入即变成 undefined。
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+
+    // target 为 ES2022+ 时 useDefineForClassFields 默认为 true，
+    // 会把「无初始值的属性声明」用 defineProperty 定义成 undefined，
+    // 干扰旧版属性装饰器写入的元数据。旧版装饰器项目一律显式关掉。
+    "useDefineForClassFields": false,
+
+    // ---- 产物 ----
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "baseUrl": "./",
+    "sourceMap": true,
+    // 后端不是库，不需要 .d.ts；关掉可加快 nest build
+    "declaration": false,
+
+    // 只引入 node 全局类型。@types/express 由 @nestjs/platform-express 的
+    // .d.ts 自行引用，不必列在这里。
+    "types": ["node"],
+    "lib": ["ES2023"],
+
+    // DI 注入的属性不在构造函数里赋值，故单独关掉这一项。
+    // strict 的其余部分（含 strictNullChecks）保持开启。
+    "strictPropertyInitialization": false
+  },
+  // 只编译 src。根目录的 prisma.config.ts 由 tsconfig.tools.json 负责，
+  // 因为它在 rootDir 之外，混进来会报 TS6059。
+  "include": ["src/**/*"],
+  // 测试文件不进 dist；它们的类型检查由 vitest 自己完成。
+  "exclude": ["dist", "node_modules", "**/*.spec.ts"]
+}
